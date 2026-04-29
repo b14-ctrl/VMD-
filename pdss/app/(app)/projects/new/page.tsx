@@ -43,45 +43,22 @@ export default function NewProjectPage() {
     setLoading(true)
     setError('')
 
-    try {
-      let floor_plan_url: string | undefined
-
-      if (floorPlanFile) {
-        const fileName = `${Date.now()}-${floorPlanFile.name}`
-        const { error: uploadError } = await supabase.storage
-          .from('floor-plans')
-          .upload(fileName, floorPlanFile)
-        if (uploadError) throw uploadError
-        const { data: { publicUrl } } = supabase.storage.from('floor-plans').getPublicUrl(fileName)
-        floor_plan_url = publicUrl
-      }
-
-      const { data: project, error: projectError } = await supabase
-        .from('projects')
-        .insert({
-          name: form.name,
-          store_name: form.store_name || null,
-          store_area_m2: form.store_area_m2 ? Number(form.store_area_m2) : null,
-          event_date: form.event_date || null,
-          season_tag: season,
-          floor_plan_url,
-        })
-        .select()
-        .single()
-
-      if (projectError) throw projectError
-
-      await supabase.from('scenes').insert({
-        project_id: project.id,
-        name: 'Main Scene',
-        scene_json: { objects: [], roomWidth: 10, roomDepth: 8, roomHeight: 3, walls: [] },
-      })
-
-      router.push(`/editor/${project.id}`)
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '오류가 발생했습니다')
-      setLoading(false)
+    // Supabase 미연결 시 mock ID로 에디터 이동
+    const mockId = `mock-${Date.now()}`
+    const projectMeta = {
+      name: form.name,
+      store_name: form.store_name || undefined,
+      store_area_m2: form.store_area_m2 ? Number(form.store_area_m2) : undefined,
+      event_date: form.event_date || undefined,
+      season_tag: season || undefined,
     }
+    sessionStorage.setItem(`project-${mockId}`, JSON.stringify(projectMeta))
+
+    if (floorPlanPreview) {
+      sessionStorage.setItem(`floorplan-${mockId}`, floorPlanPreview)
+    }
+
+    router.push(`/editor/${mockId}`)
   }
 
   return (

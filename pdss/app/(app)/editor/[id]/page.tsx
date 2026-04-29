@@ -3,8 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
 import dynamic from 'next/dynamic'
-import { createClient } from '@/lib/supabase/client'
-import { Project, Scene } from '@/lib/types'
+import { Project } from '@/lib/types'
 import { useEditorStore } from '@/store/editorStore'
 import { ObjectLibraryPanel } from '@/components/editor/ObjectLibraryPanel'
 import { PropertiesPanel } from '@/components/editor/PropertiesPanel'
@@ -13,28 +12,35 @@ import { AISuggestionPanel } from '@/components/editor/AISuggestionPanel'
 
 const SceneCanvas = dynamic(
   () => import('@/components/editor/SceneCanvas').then((m) => m.SceneCanvas),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm">
+        3D 뷰어 로딩 중...
+      </div>
+    ),
+  }
 )
+
+const DEFAULT_SCENE = { objects: [], roomWidth: 10, roomDepth: 8, roomHeight: 3, walls: [] }
 
 export default function EditorPage() {
   const params = useParams()
   const projectId = params.id as string
-  const supabase = createClient()
+  const isMock = projectId.startsWith('mock-')
 
   const [project, setProject] = useState<Project | null>(null)
-  const [sceneId, setSceneId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [showAI, setShowAI] = useState(false)
 
-  const { setScene, scene, isDirty, markClean, undo, redo } = useEditorStore()
+  const { setScene, scene, isDirty, markClean, undo, redo, viewMode } = useEditorStore()
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     loadProject()
   }, [projectId])
 
-  // Keyboard shortcuts
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
@@ -45,39 +51,67 @@ export default function EditorPage() {
     return () => window.removeEventListener('keydown', handleKey)
   }, [scene])
 
-  // Auto-save every 30s when dirty
   useEffect(() => {
     if (!isDirty) return
     if (autoSaveRef.current) clearTimeout(autoSaveRef.current)
-    autoSaveRef.current = setTimeout(() => { saveScene() }, 30000)
+    autoSaveRef.current = setTimeout(() => saveScene(), 30000)
     return () => { if (autoSaveRef.current) clearTimeout(autoSaveRef.current) }
   }, [isDirty, scene])
 
   async function loadProject() {
+    if (isMock) {
+      const raw = sessionStorage.getItem(`project-${projectId}`)
+      if (raw) {
+        const meta = JSON.parse(raw)
+        setProject({
+          id: projectId,
+          user_id: 'mock-user',
+          name: meta.name,
+          store_name: meta.store_name,
+          store_area_m2: meta.store_area_m2,
+          event_date: meta.event_date,
+          season_tag: meta.season_tag,
+          floor_plan_url: undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+      } else {
+        setProject({ id: projectId, user_id: 'mock-user', name: '새 프로젝트', created_at: '', updated_at: '' })
+      }
+      const savedScene = sessionStorage.getItem(`scene-${projectId}`)
+      setScene(savedScene ? JSON.parse(savedScene) : DEFAULT_SCENE)
+      setLoading(false)
+      return
+    }
+
+    const { createClient } = await import('@/lib/supabase/client')
+    const supabase = createClient()
     const [{ data: proj }, { data: scenes }] = await Promise.all([
       supabase.from('projects').select('*').eq('id', projectId).single(),
       supabase.from('scenes').select('*').eq('project_id', projectId).order('created_at').limit(1),
     ])
-
-    if (proj) setProject(proj)
-    if (scenes && scenes.length > 0) {
-      const s = scenes[0] as Scene
-      setSceneId(s.id)
-      setScene(s.scene_json)
-    }
+    if (proj) setProject(proj as Project)
+    if (scenes && scenes.length > 0) setScene((scenes[0] as { scene_json: typeof DEFAULT_SCENE }).scene_json)
     setLoading(false)
   }
 
   const saveScene = useCallback(async () => {
-    if (!sceneId) return
     setIsSaving(true)
-    await supabase
-      .from('scenes')
-      .update({ scene_json: scene, updated_at: new Date().toISOString() })
-      .eq('id', sceneId)
+    if (isMock) {
+      sessionStorage.setItem(`scene-${projectId}`, JSON.stringify(scene))
+      markClean()
+      setIsSaving(false)
+      return
+    }
+    const { createClient } = await import('@/lib/supabase/client')
+    const supabase = createClient()
+    const { data: scenes } = await supabase.from('scenes').select('id').eq('project_id', projectId).limit(1)
+    if (scenes && scenes.length > 0) {
+      await supabase.from('scenes').update({ scene_json: scene }).eq('id', (scenes[0] as { id: string }).id)
+    }
     markClean()
     setIsSaving(false)
-  }, [sceneId, scene])
+  }, [projectId, isMock, scene])
 
   function handleExport() {
     const canvas = document.querySelector('canvas')
@@ -102,7 +136,7 @@ export default function EditorPage() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <EditorToolbar
-        projectName={project?.name ?? '프로젝트'}
+        projectName={project?.name ?? '새 프로젝트'}
         isSaving={isSaving}
         onSave={saveScene}
         onAISuggest={() => setShowAI(true)}
@@ -111,11 +145,9 @@ export default function EditorPage() {
 
       <div className="flex flex-1 overflow-hidden">
         <ObjectLibraryPanel />
-
-        <div className="flex-1 bg-muted/20 relative">
-          <SceneCanvas viewMode={useEditorStore.getState().viewMode} />
+        <div className="flex-1 bg-muted/20 relative overflow-hidden">
+          <SceneCanvas viewMode={viewMode} />
         </div>
-
         <PropertiesPanel />
       </div>
 

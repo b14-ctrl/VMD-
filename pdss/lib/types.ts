@@ -75,6 +75,7 @@ export interface SuggestionResult {
   title: string
   concept: string
   description: string
+  imageStyle?: string
   colorPalette: string[]
   props: string[]
   mannequinCount: number
